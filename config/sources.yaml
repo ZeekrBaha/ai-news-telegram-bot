@@ -1,0 +1,36 @@
+rss:
+  - name: openai_blog
+    url: https://openai.com/blog/rss.xml
+  - name: anthropic_news
+    url: https://www.anthropic.com/news/rss.xml
+  - name: deepmind_blog
+    url: https://deepmind.google/blog/rss.xml
+  - name: hn_frontpage
+    url: https://hnrss.org/frontpage?points=100
+  - name: techcrunch_ai
+    url: https://techcrunch.com/category/artificial-intelligence/feed/
+  - name: the_verge_ai
+    url: https://www.theverge.com/rss/ai-artificial-intelligence/index.xml
+  - name: mit_tech_review_ai
+    url: https://www.technologyreview.com/topic/artificial-intelligence/feed
+  - name: ars_technica_ai
+    url: https://arstechnica.com/ai/feed/
+  - name: venturebeat_ai
+    url: https://venturebeat.com/category/ai/feed/
+
+telegram_channels: []
+
+filters:
+  keywords_include:
+    - AI
+    - LLM
+    - OpenAI
+    - Anthropic
+    - Claude
+    - GPT
+    - DeepMind
+    - agent
+    - automation
+    - robotics
+  min_content_chars: 100
+  max_age_hours: 36

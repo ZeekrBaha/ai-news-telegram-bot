@@ -1,0 +1,8 @@
+services:
+  bot:
+    build: .
+    env_file: .env
+    volumes:
+      - ./sessions:/app/sessions
+      - ./config:/app/config:ro
+    restart: unless-stopped
