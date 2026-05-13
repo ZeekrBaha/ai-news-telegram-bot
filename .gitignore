@@ -1,1 +1,13 @@
 .worktrees/
+.env
+.env.*
+sessions/
+telethon_session/
+*.session
+*.session-journal
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.venv/
+dist/
+*.egg-info/
