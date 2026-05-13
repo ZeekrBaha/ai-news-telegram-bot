@@ -7,6 +7,13 @@ from supabase import Client
 from src.database.models import ExistingHashes, RawItemRow
 
 
+def _parse_dt(value: str | None) -> datetime | None:
+    """Parse ISO format datetime string to datetime object."""
+    if value is None:
+        return None
+    return datetime.fromisoformat(value)
+
+
 def create_run(client: Client) -> UUID:
     """Insert a new run with status='running', return its id."""
     result = client.table("runs").insert({"status": "running"}).execute()
@@ -112,7 +119,7 @@ def insert_raw_items(
             url=r.get("url"),
             canonical_url=r.get("canonical_url"),
             content=r.get("content"),
-            published_at=r.get("published_at"),
+            published_at=_parse_dt(r.get("published_at")),
         )
         for r in result.data
     ]
