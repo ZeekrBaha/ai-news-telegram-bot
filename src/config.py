@@ -74,8 +74,13 @@ class SourcesConfig(BaseModel):
 
 
 def load_sources(path: str = "config/sources.yaml") -> SourcesConfig:
-    with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except FileNotFoundError as e:
+        raise FileNotFoundError(
+            f"Sources config not found at '{path}'. Copy config/sources.yaml from the example."
+        ) from e
     return SourcesConfig(**data)
 
 
