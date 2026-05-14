@@ -1,6 +1,6 @@
 # AI News Telegram Bot
 
-A daily Telegram channel that automatically collects the most important AI news from around the web, ranks the top stories with GPT, translates them into Russian, and publishes a single curated digest every morning.
+A daily Telegram channel that automatically collects the most important AI news from across the web, ranks the top stories with an LLM, produces a Russian editorial digest, and publishes a single curated post every morning.
 
 **Live channel:** [@ainewsdigestme](https://t.me/ainewsdigestme)
 
@@ -10,14 +10,16 @@ A daily Telegram channel that automatically collects the most important AI news 
 
 Every morning at 09:00 Europe/Moscow, the bot:
 
-1. **Collects** fresh items from 9 RSS feeds (OpenAI, DeepMind, TechCrunch, Wired, The Verge, Ars Technica, MIT Tech Review, VentureBeat, Hacker News) and any configured Telegram channels.
+1. **Collects** fresh items from 17 RSS feeds — major tech press (TechCrunch, Wired, The Verge, Ars Technica, MIT Tech Review, VentureBeat, Hacker News), primary research blogs (OpenAI, DeepMind, Google Research, Hugging Face, NVIDIA), top weekly curators (Import AI, Last Week in AI, One Useful Thing), and Russian-native sources (Habr AI hub, Habr ML hub). See [`config/sources.yaml`](config/sources.yaml).
 2. **Deduplicates** against everything it has ever seen (by canonical URL hash + title hash).
-3. **Filters** items older than 36 hours and those without enough content.
-4. **Ranks** all candidates in a single OpenAI call and picks the top 5.
+3. **Filters** items older than 36 hours and those without enough content. No keyword pre-filter — the ranker is smarter than `if "AI" in text`.
+4. **Ranks** all candidates in one LLM call, picks the top 5, prefers primary sources over secondary coverage, and enforces source diversity (no single outlet dominates).
 5. **Picks a hero photo** from the rank-1 story's RSS-supplied image (with fallback through lower ranks and finally a bundled default banner).
-6. **Summarizes and translates** each selected story to Russian with a title, 3–5 bullets, a "почему важно" note, and hashtags.
-7. **Formats** one Telegram HTML digest under 4096 chars (auto-shrinks if needed).
-8. **Publishes** as **two consecutive messages** to the channel: the hero photo with a short caption, then the full digest text.
+6. **Writes the digest:**
+   - **English sources:** summarized in English, then translated into a Russian editorial entry (headline + 2-4 flowing sentences).
+   - **Russian sources (Habr):** a single Russian-only model call works directly from the original — no roundtrip, original phrasing preserved.
+7. **Formats** the digest with editorial style: bold titles (no source-link clutter), no per-item hashtag spam, "почему важно" only on the top-2 stories, one single channel tag at the bottom.
+8. **Publishes** as two consecutive messages: the hero photo with a short caption, then the full digest text.
 9. **Stores** every step in Supabase — raw items, ranking reasoning, generated text, hero metadata, and digest message ids — for a complete audit trail.
 
 Two deployment modes are supported:
@@ -57,10 +59,13 @@ Two deployment modes are supported:
 │       └──────┬──────┘         └─────────────┘           │
 │              ▼                                          │
 │       ┌─────────────┐         ┌─────────────┐           │
-│       │ Summarize + │ ──────→ │   Supabase  │           │
-│       │ translate   │         │processed_items          │
-│       │ (OpenAI)    │         └─────────────┘           │
-│       └──────┬──────┘                                   │
+│       │ Russian src?│         │             │           │
+│       │   ├─ no  → summarize → translate    │           │
+│       │   └─ yes →  process_russian_item    │           │
+│       │             (single Russian call)   │           │
+│       │ (OpenAI)    │ ──────→ │   Supabase  │           │
+│       │             │         │processed_items          │
+│       └──────┬──────┘         └─────────────┘           │
 │              ▼                                          │
 │       ┌─────────────┐                                   │
 │       │  Hero pick  │  (rank-1 image → fallback ranks   │
@@ -90,6 +95,57 @@ Two deployment modes are supported:
 - **Two-message publish layout** — Telegram caps photo captions at 1024 chars; the full digest is ~3500. Sending hero + digest as two messages preserves all content without truncation.
 - **Hero fallback chain** — broken hotlink falls back to the bundled `assets/default_hero.png`. If that also fails, the digest still publishes text-only — the hero is never a blocker for shipping.
 - **Kill switch** — `ENABLE_HERO_MEDIA=false` reverts to text-only publishing without a code change.
+- **Source-language branching** — sources are tagged `en` or `ru` in `sources.yaml`. Russian items skip the English→Russian translator and call `process_russian_item()` instead, saving one OpenAI call per item per run and preserving the journalist's original phrasing.
+- **No keyword pre-filter** — a hardcoded `keywords_include` list was filtering out good stories that didn't happen to mention specific tokens. The ranker is left to judge relevance from titles + content directly.
+- **Source-diversity rule** — the ranker prompt asks for at most 2 items from the same outlet unless one is clearly more important. Primary sources beat secondary coverage of the same story.
+
+---
+
+## Editorial style
+
+The digest is deliberately styled to read like a human editor wrote it, not like a scraping bot dumped output. These choices are intentional — don't "fix" them back to bot-style defaults without a strong reason.
+
+- **No hyperlinked titles.** Per-story `<a href="...">title</a>` is the loudest AI-slop tell. Titles render bold. The source is implied by the photo + headline.
+- **One brand tag, not a hashtag wall.** A single `#AIдайджест` at the bottom. The old auto-generated `#AI #LLM #OpenAI #...` strip is gone.
+- **"Почему важно" only on top-2 stories.** A human editor doesn't justify every item — reserving the line for emphasis reads as deliberate. The translator may also return an empty string when there's no real broader significance.
+- **2-4 sentences per story, not stiff bullets.** Translator prompt asks for natural prose, not labelled fragments.
+- **No robot emoji in the header.** The default banner and hero caption read "AI Дайджест", not "🤖 AI Дайджест".
+- **Editorial banner.** `assets/default_hero.png` uses a restrained palette and a thin accent rule, not a tech-demo gradient. Regenerate via `uv run python -m src.scripts.generate_default_hero` after editing the script.
+
+If a future PR re-introduces hashtag walls, title links, or per-story "this matters because" lines, treat it as a regression.
+
+---
+
+## Source configuration
+
+All RSS feeds live in [`config/sources.yaml`](config/sources.yaml). Schema:
+
+```yaml
+rss:
+  - name: openai_blog                            # short snake_case id, used in DB rows
+    url: https://openai.com/news/rss.xml
+    # `language` is optional. Defaults to "en".
+    # Mark "ru" to skip the English→Russian translator step and
+    # process the item with a single Russian-only model call.
+
+  - name: habr_ai
+    url: https://habr.com/ru/rss/hubs/artificial_intelligence/articles/all/
+    language: ru
+
+telegram_channels: []                            # optional; user-session sources
+
+filters:
+  min_content_chars: 100                         # drop items shorter than this
+  max_age_hours: 36
+```
+
+To add a source:
+
+1. Append a new entry under `rss:`.
+2. Pick a short `name` (used in DB rows and log lines).
+3. Set `language: ru` if the source publishes in Russian.
+4. Run `uv run python -m src.main --once --dry-run` to confirm the feed parses and items survive filtering.
+5. Commit the change. Tomorrow's scheduled run will pick it up automatically.
 
 ---
 
@@ -252,17 +308,18 @@ Use this when you need precise scheduling (GitHub cron drifts 5–15 min), you'r
 
 ## Cost per run
 
-Default config: `gpt-4o-mini`, top-5 digest, ~50 candidate items per day.
+Default config: `gpt-4o-mini`, top-5 digest, ~130 candidate items per day (after age + dedup) across 17 RSS feeds. Typical mix: ~3 English-source picks + ~2 Russian-source picks per digest.
 
 **Per-call breakdown:**
 
 | Call | Count per run | Typical input tokens | Typical output tokens |
 | --- | --- | --- | --- |
-| Ranker (one batch call over all candidates) | 1 | ~10,000 | ~600 |
-| Summarizer (one per selected story) | 5 | ~1,200 each | ~150 each |
-| Translator (one per selected story) | 5 | ~400 each | ~300 each |
+| Ranker (one batch call over all candidates) | 1 | ~26,000 | ~600 |
+| Summarizer (one per English-source story) | ~3 | ~1,200 each | ~150 each |
+| Translator (one per English-source story) | ~3 | ~400 each | ~300 each |
+| process_russian_item (one per Russian-source story) | ~2 | ~600 each | ~300 each |
 
-**Token totals per run:** ~18,000 input + ~2,850 output = ~21,000 tokens
+**Token totals per run:** ~34,400 input + ~2,850 output ≈ 37,000 tokens
 
 **gpt-4o-mini pricing** (as of OpenAI's published rates):
 
@@ -271,17 +328,19 @@ Default config: `gpt-4o-mini`, top-5 digest, ~50 candidate items per day.
 
 **Math per run:**
 
-- Input cost: 18,000 / 1,000,000 × $0.15 = **$0.0027**
+- Input cost: 34,400 / 1,000,000 × $0.15 = **$0.0052**
 - Output cost: 2,850 / 1,000,000 × $0.60 = **$0.0017**
-- **Total per run: ~$0.0044 (less than half a cent)**
+- **Total per run: ~$0.0069 (under a cent)**
 
-**Monthly (30 daily runs):** ~$0.13
+**Monthly (30 daily runs):** ~$0.21
 
-**Annual:** ~$1.60
+**Annual:** ~$2.50
 
-GitHub Actions and Supabase free tiers cover the rest. The whole bot runs on **roughly $2 per year**.
+GitHub Actions and Supabase free tiers cover the rest. The whole bot runs on **roughly $2.50 per year**.
 
-If you switch `OPENAI_MODEL` to `gpt-4o` (10× the cost), expect ~$0.04 per run → ~$1.30/month → ~$16/year. Still cheap, but you'd notice the difference.
+The increase from earlier ~$1.60/year reflects the move from 9 to 17 sources (larger ranker input). The Russian-source skip-translator partly offsets it; otherwise the bill would be closer to $3.50/year.
+
+If you switch `OPENAI_MODEL` to `gpt-4o` (10× the cost), expect ~$0.07 per run → ~$2/month → ~$25/year. Still cheap, but you'd notice the difference.
 
 ---
 
@@ -292,7 +351,7 @@ uv run ruff check .
 uv run pytest
 ```
 
-87 tests cover canonicalization, hash generation, dedupe, RSS parsing, media extraction from each feed source type, AI client mocking, formatter escaping, length-reduction, hero caption building, the two-stage hero/digest publisher with three fallback paths, and the full pipeline orchestrator with mocked OpenAI/Telegram.
+90 tests cover canonicalization, hash generation, dedupe, RSS parsing, media extraction from each feed source type, AI client mocking, the Russian single-call path, formatter escaping with the editorial-style rules (no title links, single channel tag, top-2 why-it-matters), length-reduction, hero caption building, the two-stage hero/digest publisher with three fallback paths, and the full pipeline orchestrator with mocked OpenAI/Telegram.
 
 ---
 
@@ -308,7 +367,10 @@ ai-news-telegram-bot/
 ├── config/
 │   └── sources.yaml              # RSS feeds + Telegram channels + filters
 ├── docs/
-│   └── github-actions-setup.md   # secrets, migration, manual run walkthrough
+│   ├── github-actions-setup.md   # secrets, migration, manual run walkthrough
+│   └── superpowers/
+│       ├── specs/                # original design spec
+│       └── plans/                # phased implementation + hero-media plan
 ├── src/
 │   ├── main.py                   # CLI entry point (--once, --dry-run)
 │   ├── config.py                 # pydantic-settings loader (incl. ENABLE_HERO_MEDIA)
@@ -321,9 +383,10 @@ ai-news-telegram-bot/
 │   ├── ai/
 │   │   ├── client.py             # OpenAI async client + retry
 │   │   ├── ranker.py             # rank candidates in one call
-│   │   ├── summarizer.py         # per-item summary
-│   │   ├── translator.py         # English → Russian + Pydantic validation
-│   │   └── prompts/              # system prompts
+│   │   ├── summarizer.py         # per-item summary (English path)
+│   │   ├── translator.py         # English → Russian + process_russian_item()
+│   │   └── prompts/              # ranker_system.txt, summarizer_system.txt,
+│   │                             # translator_system.txt, summarizer_ru_system.txt
 │   ├── publisher/
 │   │   ├── formatter.py          # HTML digest + hero caption builder
 │   │   └── telegram_bot.py       # sendPhoto + sendMessage with fallback
