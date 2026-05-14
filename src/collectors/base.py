@@ -2,7 +2,7 @@ import hashlib
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 
 @dataclass(frozen=True)
@@ -26,17 +26,43 @@ class Collector:
         raise NotImplementedError
 
 
+TRACKING_QUERY_PREFIXES = ("utm_",)
+TRACKING_QUERY_PARAMS = {
+    "fbclid",
+    "gclid",
+    "igshid",
+    "mc_cid",
+    "mc_eid",
+    "mkt_tok",
+    "msclkid",
+    "ref",
+    "spm",
+}
+
+
 def canonical_url(url: str | None) -> str | None:
-    """Normalize URL: lowercase scheme+host, remove tracking params, remove fragment."""
+    """Normalize URL for dedupe: lowercase origin, drop tracking params and fragment."""
     if not url:
         return None
     try:
         parsed = urlparse(url.strip())
-        # normalize scheme and host
         scheme = parsed.scheme.lower()
         netloc = parsed.netloc.lower()
-        # rebuild without fragment, keep path/query
-        normalized = urlunparse((scheme, netloc, parsed.path, parsed.params, parsed.query, ""))
+        path = parsed.path
+        if path != "/":
+            path = path.rstrip("/")
+
+        clean_query = []
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+            key_lower = key.lower()
+            if key_lower in TRACKING_QUERY_PARAMS:
+                continue
+            if any(key_lower.startswith(prefix) for prefix in TRACKING_QUERY_PREFIXES):
+                continue
+            clean_query.append((key, value))
+
+        query = urlencode(clean_query, doseq=True)
+        normalized = urlunparse((scheme, netloc, path, parsed.params, query, ""))
         return normalized
     except Exception:
         return url

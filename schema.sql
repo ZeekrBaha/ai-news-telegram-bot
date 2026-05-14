@@ -31,7 +31,6 @@ create table raw_items (
   collected_at timestamptz default now()
 );
 
-create unique index raw_items_url_hash_key on raw_items(url_hash);
 create index raw_items_title_hash_idx on raw_items(title_hash);
 create index raw_items_collected_at_idx on raw_items(collected_at);
 create index raw_items_source_idx on raw_items(source_type, source_name, source_item_id);

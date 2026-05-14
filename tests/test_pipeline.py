@@ -7,6 +7,8 @@ from uuid import uuid4
 import pytest
 
 from src.pipeline import run_daily
+from src.collectors.base import CollectedItem
+from src.pipeline import _apply_source_filters, _dedupe_current_batch
 
 
 # ---------------------------------------------------------------------------
@@ -16,11 +18,17 @@ from src.pipeline import run_daily
 def _make_collected_item(url_hash: str = "hash1", title_hash: str = "thash1"):
     """Return a minimal CollectedItem-like MagicMock."""
     item = MagicMock()
+    item.source_type = "rss"
+    item.source_name = "source"
+    item.source_item_id = url_hash
     item.url_hash = url_hash
     item.title_hash = title_hash
     item.url = f"https://example.com/{url_hash}"
+    item.canonical_url = item.url
     item.published_at = datetime.now(timezone.utc)
     item.title = f"Title {url_hash}"
+    item.content = f"AI content about OpenAI and LLMs for {url_hash}"
+    item.raw = {}
     return item
 
 
@@ -62,6 +70,7 @@ def _make_sources_mock(telegram_channels=None):
     sources = MagicMock()
     sources.rss = [MagicMock(name="TechCrunch", url="https://feeds.tc.com")]
     sources.telegram_channels = telegram_channels or []
+    sources.filters = {}
     return sources
 
 
@@ -99,6 +108,57 @@ _PATCHES = {
     "mark_digest_failed": "src.pipeline.mark_digest_failed",
     "format_digest": "src.pipeline.format_digest",
 }
+
+
+# ---------------------------------------------------------------------------
+# Pure helper tests
+# ---------------------------------------------------------------------------
+
+def test_current_batch_dedupe_keeps_newest_unique_hashes():
+    older = CollectedItem(
+        source_type="rss",
+        source_name="a",
+        source_item_id="1",
+        url="https://example.com/1",
+        canonical_url="https://example.com/1",
+        url_hash="same-url",
+        title_hash="same-title",
+        title="Older",
+        content="AI story content",
+        published_at=datetime(2026, 5, 12, tzinfo=timezone.utc),
+        raw={},
+    )
+    newer = CollectedItem(
+        source_type="rss",
+        source_name="b",
+        source_item_id="2",
+        url="https://example.com/2",
+        canonical_url="https://example.com/2",
+        url_hash="same-url",
+        title_hash="other-title",
+        title="Newer",
+        content="AI story content",
+        published_at=datetime(2026, 5, 13, tzinfo=timezone.utc),
+        raw={},
+    )
+
+    assert _dedupe_current_batch([older, newer]) == [newer]
+
+
+def test_apply_source_filters_enforces_keywords_and_content_length():
+    keep = _make_collected_item("keep", "keep-title")
+    drop_short = _make_collected_item("short", "short-title")
+    drop_short.content = "AI"
+    drop_keyword = _make_collected_item("boring", "boring-title")
+    drop_keyword.title = "Cooking update"
+    drop_keyword.content = "A long enough item without matching terms"
+
+    result = _apply_source_filters(
+        [keep, drop_short, drop_keyword],
+        {"keywords_include": ["OpenAI"], "min_content_chars": 20},
+    )
+
+    assert result == [keep]
 
 
 # ---------------------------------------------------------------------------
@@ -246,3 +306,48 @@ def test_publish_failure_marks_digest_and_run_failed(mock_settings):
     mock_finalize.assert_called_once()
     finalize_args = mock_finalize.call_args[0]
     assert finalize_args[2] == "failed", f"Expected 'failed', got {finalize_args[2]!r}"
+
+
+def test_publish_timeout_records_manual_check_message(mock_settings):
+    """A possible-send timeout should leave an explicit manual-check failure."""
+    run_id = str(uuid4())
+    digest_id = str(uuid4())
+
+    items = [_make_collected_item(f"h{i}", f"t{i}") for i in range(5)]
+    choices = [_make_choice(i + 1, f"h{i}") for i in range(5)]
+    raw_rows = [_make_raw_row(f"h{i}") for i in range(5)]
+    ranked_rows_flat = [{"rank": i + 1, "id": str(uuid4())} for i in range(5)]
+
+    existing = MagicMock()
+    existing.url_hashes = set()
+    existing.title_hashes = set()
+
+    with patch("src.pipeline.get_client"), \
+         patch("src.pipeline.get_ai_client"), \
+         patch("src.pipeline.load_sources", return_value=_make_sources_mock()), \
+         patch("src.pipeline.create_run", return_value=run_id), \
+         patch("src.pipeline.finalize_run") as mock_finalize, \
+         patch("src.pipeline.find_existing_hashes", return_value=existing), \
+         patch("src.pipeline.insert_raw_items", return_value=raw_rows), \
+         patch("src.pipeline.record_ranked_items", return_value=ranked_rows_flat), \
+         patch("src.pipeline.record_processed_items"), \
+         patch("src.pipeline.create_pending_digest", return_value=digest_id), \
+         patch("src.pipeline.mark_digest_published"), \
+         patch("src.pipeline.mark_digest_failed") as mock_mark_failed, \
+         patch("src.pipeline.rank_items", new=AsyncMock(return_value=choices)), \
+         patch("src.pipeline.summarize_item", new=AsyncMock(return_value="summary")), \
+         patch("src.pipeline.translate_item", new=AsyncMock(return_value=_make_translated())), \
+         patch("src.pipeline.publish_digest", new=AsyncMock(side_effect=TimeoutError("slow"))), \
+         patch("src.pipeline.format_digest", return_value=("digest text", "chash123")):
+
+        rss_mock = MagicMock()
+        rss_mock.collect = AsyncMock(return_value=items)
+        with patch("src.pipeline.RssCollector", return_value=rss_mock):
+            with pytest.raises(RuntimeError, match="Manual channel check required"):
+                asyncio.run(run_daily(mock_settings, dry_run=False))
+
+    mock_mark_failed.assert_called_once()
+    assert "Manual channel check required" in mock_mark_failed.call_args[0][2]
+    finalize_kwargs = mock_finalize.call_args.kwargs
+    assert finalize_kwargs["items_collected"] == 5
+    assert finalize_kwargs["items_after_dedup"] == 5
