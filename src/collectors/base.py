@@ -23,6 +23,9 @@ class CollectedItem:
     raw: dict
     media_url: str | None = field(default=None)
     media_type: MediaType | None = field(default=None)
+    # ISO 639-1 language code of the source. "en" by default; "ru" sources skip
+    # the translator since the article is already in Russian.
+    language: str = field(default="en")
 
 
 class Collector:

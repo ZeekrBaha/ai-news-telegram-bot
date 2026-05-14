@@ -36,11 +36,15 @@ rss:
     url: https://www.oneusefulthing.org/feed
 
   # Russian-native sources (no other Russian AI digest using this same toolkit
-  # will surface these — high differentiation for the channel)
+  # will surface these — high differentiation for the channel). Marked
+  # `language: ru` so the pipeline skips the English→Russian translator and
+  # preserves the original phrasing.
   - name: habr_ai
     url: https://habr.com/ru/rss/hubs/artificial_intelligence/articles/all/
+    language: ru
   - name: habr_ml
     url: https://habr.com/ru/rss/hubs/machine_learning/articles/all/
+    language: ru
 
 telegram_channels: []
 

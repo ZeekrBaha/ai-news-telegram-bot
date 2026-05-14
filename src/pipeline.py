@@ -6,7 +6,7 @@ from typing import Any
 from src.ai.client import get_ai_client
 from src.ai.ranker import rank_items
 from src.ai.summarizer import summarize_item
-from src.ai.translator import translate_item
+from src.ai.translator import process_russian_item, translate_item
 from src.collectors.base import CollectedItem
 from src.collectors.rss import RssCollector
 from src.collectors.telegram import TelegramCollector
@@ -97,7 +97,10 @@ async def run_daily(settings: Settings, dry_run: bool = False) -> None:
         # --- Step 1: Collect ---
         rss_collector = RssCollector(
             settings=settings,
-            sources=[{"name": s.name, "url": s.url} for s in sources.rss],
+            sources=[
+                {"name": s.name, "url": s.url, "language": s.language}
+                for s in sources.rss
+            ],
         )
 
         telegram_channels = sources.telegram_channels
@@ -225,13 +228,25 @@ async def run_daily(settings: Settings, dry_run: bool = False) -> None:
         ranked_id_by_rank = {row["rank"]: row["id"] for row in ranked_rows}
 
         # --- Step 7: Summarize and translate ---
+        # Items from Russian-language sources skip the translator — we build a
+        # TranslatedItem directly with a Russian-only model call. Saves one
+        # API call per Russian item and preserves the journalist's original
+        # phrasing instead of a Russian→English→Russian roundtrip.
         processed = []
         for choice, item in selected_items:
             try:
-                summary_en = await summarize_item(ai, settings.openai_model, item)
-                translated = await translate_item(
-                    ai, settings.openai_model, item.title, summary_en, item.url
-                )
+                if getattr(item, "language", "en") == "ru":
+                    translated = await process_russian_item(
+                        ai, settings.openai_model, item.title, item.content
+                    )
+                    # Keep summary_en empty for Russian items — the DB column
+                    # is nullable and the field isn't displayed anywhere.
+                    summary_en = ""
+                else:
+                    summary_en = await summarize_item(ai, settings.openai_model, item)
+                    translated = await translate_item(
+                        ai, settings.openai_model, item.title, summary_en, item.url
+                    )
                 processed.append({
                     "choice": choice,
                     "item": item,

@@ -67,6 +67,10 @@ class Settings(BaseSettings):
 class RssSource(BaseModel):
     name: str
     url: str
+    # ISO 639-1 language code of the source. Items from `ru` sources skip the
+    # translator step entirely (the article is already in Russian). Defaults to
+    # `en` for backward compatibility with existing entries.
+    language: str = "en"
 
 
 class SourcesConfig(BaseModel):

@@ -45,13 +45,14 @@ class RssCollector(Collector):
         response.raise_for_status()
         feed = feedparser.parse(response.text)
         items = []
+        language = source.get("language", "en")
         for entry in feed.entries:
-            item = self._parse_entry(entry, source["name"])
+            item = self._parse_entry(entry, source["name"], language)
             if item is not None:
                 items.append(item)
         return items
 
-    def _parse_entry(self, entry: dict, source_name: str) -> CollectedItem | None:
+    def _parse_entry(self, entry: dict, source_name: str, language: str = "en") -> CollectedItem | None:
         title = entry.get("title", "").strip()
         if not title:
             return None
@@ -100,4 +101,5 @@ class RssCollector(Collector):
             raw=dict(entry),
             media_url=media_url,
             media_type=media_type,
+            language=language,
         )

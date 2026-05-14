@@ -56,6 +56,11 @@ def _load_system_prompt() -> str:
     return (prompts_dir / "translator_system.txt").read_text(encoding="utf-8")
 
 
+def _load_russian_summarizer_prompt() -> str:
+    prompts_dir = Path(__file__).parent / "prompts"
+    return (prompts_dir / "summarizer_ru_system.txt").read_text(encoding="utf-8")
+
+
 @retry(
     retry=retry_if_exception_type((APIError, APIConnectionError, RateLimitError, ValueError)),
     stop=stop_after_attempt(3),
@@ -91,3 +96,44 @@ async def translate_item(
         return TranslatedItem(**data)
     except Exception as e:
         raise ValueError(f"Failed to parse translation: {e}\nRaw: {raw}") from e
+
+
+@retry(
+    retry=retry_if_exception_type((APIError, APIConnectionError, RateLimitError, ValueError)),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=0.25, min=0.25, max=4),
+    reraise=True,
+)
+async def process_russian_item(
+    client: AsyncOpenAI,
+    model: str,
+    title: str,
+    content: str,
+) -> TranslatedItem:
+    """
+    Build a TranslatedItem directly from Russian-language source content.
+
+    Replaces the summarize→translate two-call chain with a single Russian-only
+    call. Saves one OpenAI call per Russian item per run and preserves the
+    original phrasing instead of running it through a Russian→English→Russian
+    roundtrip.
+    """
+    system_prompt = _load_russian_summarizer_prompt()
+    user_message = f"Заголовок: {title}\n\nТекст: {content}"
+
+    response = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.3,
+    )
+
+    raw = response.choices[0].message.content
+    try:
+        data = json.loads(raw)
+        return TranslatedItem(**data)
+    except Exception as e:
+        raise ValueError(f"Failed to parse Russian summary: {e}\nRaw: {raw}") from e

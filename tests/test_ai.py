@@ -203,6 +203,44 @@ async def test_translator_missing_fields_fails():
         await translate_item(mock_client, "gpt-4o-mini", "Title", "Summary")
 
 
+# ---- process_russian_item: single-call path for Russian sources ----
+
+@pytest.mark.asyncio
+async def test_process_russian_item_returns_translated_item():
+    from src.ai.translator import process_russian_item, TranslatedItem
+
+    valid = json.dumps({
+        "title_ru": "Хабр о новой модели",
+        "bullets_ru": ["Краткое описание возможностей.", "Сравнение с предыдущей версией."],
+        "why_it_matters_ru": "",
+    })
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create = AsyncMock(return_value=make_mock_response(valid))
+
+    result = await process_russian_item(
+        mock_client, "gpt-4o-mini",
+        "Хабр о новой модели", "Полный текст статьи на русском..."
+    )
+    assert isinstance(result, TranslatedItem)
+    assert result.title_ru == "Хабр о новой модели"
+    assert len(result.bullets_ru) == 2
+    assert result.why_it_matters_ru == ""
+    # Russian path makes exactly one OpenAI call.
+    assert mock_client.chat.completions.create.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_process_russian_item_invalid_json_fails():
+    from src.ai.translator import process_russian_item
+
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create = AsyncMock(
+        return_value=make_mock_response("not valid json {{")
+    )
+    with pytest.raises(ValueError, match="Failed to parse Russian summary"):
+        await process_russian_item(mock_client, "gpt-4o-mini", "Заголовок", "Контент")
+
+
 # ---- TranslatedItem validation unit tests (no mock) ----
 
 def test_translated_item_valid():
