@@ -14,9 +14,10 @@ def _load_system_prompt() -> str:
 
 
 @retry(
-    retry=retry_if_exception_type((APIError, APIConnectionError, RateLimitError)),
+    retry=retry_if_exception_type((APIError, APIConnectionError, RateLimitError, ValueError)),
     stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
+    wait=wait_exponential(multiplier=0.25, min=0.25, max=4),
+    reraise=True,
 )
 async def summarize_item(
     client: AsyncOpenAI,

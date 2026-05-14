@@ -1,7 +1,7 @@
 import json
 import logging
 from pathlib import Path
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from openai import AsyncOpenAI, APIError, APIConnectionError, RateLimitError
 
@@ -41,6 +41,16 @@ class RankingResponse(BaseModel):
             raise ValueError("ranking response must contain items")
         return v
 
+    @model_validator(mode="after")
+    def validate_unique_choices(self) -> "RankingResponse":
+        ids = [item.id for item in self.items]
+        ranks = [item.rank for item in self.items]
+        if len(ids) != len(set(ids)):
+            raise ValueError("ranking response contains duplicate ids")
+        if len(ranks) != len(set(ranks)):
+            raise ValueError("ranking response contains duplicate ranks")
+        return self
+
 
 def _load_system_prompt() -> str:
     prompts_dir = Path(__file__).parent / "prompts"
@@ -48,9 +58,10 @@ def _load_system_prompt() -> str:
 
 
 @retry(
-    retry=retry_if_exception_type((APIError, APIConnectionError, RateLimitError)),
+    retry=retry_if_exception_type((APIError, APIConnectionError, RateLimitError, ValueError)),
     stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=10),
+    wait=wait_exponential(multiplier=0.25, min=0.25, max=4),
+    reraise=True,
 )
 async def rank_items(
     client: AsyncOpenAI,
@@ -96,6 +107,18 @@ async def rank_items(
     except Exception as e:
         raise ValueError(f"Failed to parse ranking response: {e}\nRaw: {raw}") from e
 
+    allowed_ids = {item.url_hash for item in items}
+    unknown_ids = {choice.id for choice in ranking.items} - allowed_ids
+    if unknown_ids:
+        raise ValueError(f"Ranking response contains unknown ids: {sorted(unknown_ids)}")
+    if len(ranking.items) > top_n:
+        raise ValueError(f"Ranking response returned {len(ranking.items)} items, expected at most {top_n}")
+
     # Sort by rank and return top_n
     sorted_items = sorted(ranking.items, key=lambda x: x.rank)
-    return sorted_items[:top_n]
+    expected_ranks = list(range(1, len(sorted_items) + 1))
+    actual_ranks = [item.rank for item in sorted_items]
+    if actual_ranks != expected_ranks:
+        raise ValueError(f"Ranking response ranks must be contiguous from 1: {actual_ranks}")
+
+    return sorted_items

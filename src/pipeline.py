@@ -1,6 +1,7 @@
 import logging
 import traceback
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from src.ai.client import get_ai_client
 from src.ai.ranker import rank_items
@@ -28,6 +29,51 @@ from src.publisher.telegram_bot import publish_digest
 logger = logging.getLogger(__name__)
 
 
+def _apply_source_filters(items: list[CollectedItem], filters: dict[str, Any]) -> list[CollectedItem]:
+    """Apply optional source filters from config/sources.yaml."""
+    if not filters:
+        return items
+
+    min_content_chars = int(filters.get("min_content_chars") or 0)
+    keywords = [str(k).lower() for k in filters.get("keywords_include") or [] if str(k).strip()]
+
+    filtered = []
+    for item in items:
+        searchable = f"{item.title}\n{item.content}".lower()
+        if min_content_chars and len(item.content.strip()) < min_content_chars:
+            continue
+        if keywords and not any(keyword in searchable for keyword in keywords):
+            continue
+        filtered.append(item)
+    return filtered
+
+
+def _dedupe_current_batch(items: list[CollectedItem]) -> list[CollectedItem]:
+    """Keep one item per url_hash/title_hash before database insert."""
+    seen_url_hashes: set[str] = set()
+    seen_title_hashes: set[str] = set()
+    deduped = []
+
+    for item in sorted(items, key=lambda i: i.published_at, reverse=True):
+        if item.url_hash in seen_url_hashes or item.title_hash in seen_title_hashes:
+            continue
+        seen_url_hashes.add(item.url_hash)
+        seen_title_hashes.add(item.title_hash)
+        deduped.append(item)
+
+    return deduped
+
+
+def _is_publish_timeout(error: Exception) -> bool:
+    if isinstance(error, TimeoutError):
+        return True
+    try:
+        from telegram.error import TimedOut
+    except Exception:
+        TimedOut = ()  # type: ignore[assignment]
+    return isinstance(error, TimedOut)
+
+
 async def run_daily(settings: Settings, dry_run: bool = False) -> None:
     """
     Main daily pipeline. Creates a run row, collects, ranks, summarizes,
@@ -43,6 +89,9 @@ async def run_daily(settings: Settings, dry_run: bool = False) -> None:
     logger.info("Started run %s (dry_run=%s)", run_id, dry_run)
 
     digest_id = None
+    items_collected = 0
+    items_after_dedup = 0
+    items_published = 0
 
     try:
         # --- Step 1: Collect ---
@@ -79,7 +128,13 @@ async def run_daily(settings: Settings, dry_run: bool = False) -> None:
         candidates = [c for c in candidates if c.published_at >= cutoff]
         logger.info("After age filter: %d items", len(candidates))
 
-        # --- Step 3: Pre-insert dedupe ---
+        candidates = _apply_source_filters(candidates, sources.filters)
+        logger.info("After source filters: %d items", len(candidates))
+
+        candidates = _dedupe_current_batch(candidates)
+        logger.info("After current-run dedup: %d items", len(candidates))
+
+        # --- Step 3: Pre-insert historical dedupe ---
         url_hashes = [c.url_hash for c in candidates]
         title_hashes = [c.title_hash for c in candidates]
         existing = find_existing_hashes(db, url_hashes, title_hashes)
@@ -261,22 +316,31 @@ async def run_daily(settings: Settings, dry_run: bool = False) -> None:
         logger.info("Created pending digest %s", digest_id)
 
         # --- Step 11: Publish ---
-        message_id = await publish_digest(
-            bot_token=settings.telegram_bot_token,
-            channel_id=settings.telegram_channel_id,
-            text=digest_text,
-        )
+        try:
+            message_id = await publish_digest(
+                bot_token=settings.telegram_bot_token,
+                channel_id=settings.telegram_channel_id,
+                text=digest_text,
+            )
+        except Exception as e:
+            if _is_publish_timeout(e):
+                raise RuntimeError(
+                    "Telegram publish timed out after a possible send. "
+                    "Manual channel check required before any retry."
+                ) from e
+            raise
         logger.info("Published digest, message_id=%s", message_id)
 
         # --- Step 12: Mark published ---
         mark_digest_published(db, digest_id, message_id)
 
         # --- Step 13: Finalize run ---
+        items_published = len(processed)
         finalize_run(
             db, run_id, "success",
             items_collected=items_collected,
             items_after_dedup=items_after_dedup,
-            items_published=len(processed),
+            items_published=items_published,
         )
         logger.info("Run %s completed successfully", run_id)
 
@@ -293,7 +357,15 @@ async def run_daily(settings: Settings, dry_run: bool = False) -> None:
 
         # Finalize run as failed
         try:
-            finalize_run(db, run_id, "failed", error=error_text)
+            finalize_run(
+                db,
+                run_id,
+                "failed",
+                items_collected=items_collected,
+                items_after_dedup=items_after_dedup,
+                items_published=items_published,
+                error=error_text,
+            )
         except Exception as inner:
             logger.error("Failed to finalize run: %s", inner)
 

@@ -28,7 +28,14 @@ def start_scheduler(settings: Settings) -> None:
             # Pipeline already finalizes run on error; just log here
             logger.error("Scheduled job failed: %s", e)
 
-    scheduler.add_job(job, trigger=trigger)
+    scheduler.add_job(
+        job,
+        trigger=trigger,
+        id="daily_digest",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
     logger.info(
         "Scheduler started. Next run at %s:%02d %s",
         settings.schedule_hour,

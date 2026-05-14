@@ -11,3 +11,6 @@ __pycache__/
 .venv/
 dist/
 *.egg-info/
+.claude/
+.playwright-cli/
+README.md.bak

@@ -15,6 +15,13 @@ def test_canonical_url_removes_fragment():
     result = canonical_url("https://example.com/page#section")
     assert "#section" not in result
 
+def test_canonical_url_removes_tracking_params():
+    result = canonical_url("https://example.com/page?utm_source=x&id=42&fbclid=abc")
+    assert result == "https://example.com/page?id=42"
+
+def test_canonical_url_strips_trailing_slash():
+    assert canonical_url("https://example.com/page/") == "https://example.com/page"
+
 def test_canonical_url_none():
     assert canonical_url(None) is None
 

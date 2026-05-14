@@ -1,8 +1,8 @@
 rss:
   - name: openai_blog
-    url: https://openai.com/blog/rss.xml
-  - name: anthropic_news
-    url: https://www.anthropic.com/news/rss.xml
+    url: https://openai.com/news/rss.xml
+  - name: wired_ai
+    url: https://www.wired.com/feed/tag/ai/latest/rss
   - name: deepmind_blog
     url: https://deepmind.google/blog/rss.xml
   - name: hn_frontpage
@@ -16,7 +16,7 @@ rss:
   - name: ars_technica_ai
     url: https://arstechnica.com/ai/feed/
   - name: venturebeat_ai
-    url: https://venturebeat.com/category/ai/feed/
+    url: https://venturebeat.com/category/ai/feed
 
 telegram_channels: []
 

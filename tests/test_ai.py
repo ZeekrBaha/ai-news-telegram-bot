@@ -61,6 +61,65 @@ async def test_ranker_invalid_json_raises():
 
     with pytest.raises(ValueError, match="Failed to parse"):
         await rank_items(mock_client, "gpt-4o-mini", items, top_n=5)
+    assert mock_client.chat.completions.create.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_ranker_unknown_id_retries_and_raises():
+    from src.ai.ranker import rank_items
+    from src.collectors.base import CollectedItem
+
+    items = [
+        CollectedItem(
+            source_type="rss", source_name="blog", source_item_id="1",
+            url=None, canonical_url=None, url_hash="known", title_hash="bbb",
+            title="Test", content="Content", published_at=datetime.now(timezone.utc), raw={}
+        ),
+    ]
+
+    invalid_response = json.dumps({
+        "items": [{"id": "unknown", "rank": 1, "score": 0.9, "reasoning": "bad id"}]
+    })
+
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create = AsyncMock(return_value=make_mock_response(invalid_response))
+
+    with pytest.raises(ValueError, match="unknown ids"):
+        await rank_items(mock_client, "gpt-4o-mini", items, top_n=5)
+    assert mock_client.chat.completions.create.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_ranker_duplicate_ranks_retries_and_raises():
+    from src.ai.ranker import rank_items
+    from src.collectors.base import CollectedItem
+
+    items = [
+        CollectedItem(
+            source_type="rss", source_name="blog", source_item_id="1",
+            url=None, canonical_url=None, url_hash="a", title_hash="ta",
+            title="A", content="Content", published_at=datetime.now(timezone.utc), raw={}
+        ),
+        CollectedItem(
+            source_type="rss", source_name="blog", source_item_id="2",
+            url=None, canonical_url=None, url_hash="b", title_hash="tb",
+            title="B", content="Content", published_at=datetime.now(timezone.utc), raw={}
+        ),
+    ]
+
+    invalid_response = json.dumps({
+        "items": [
+            {"id": "a", "rank": 1, "score": 0.9, "reasoning": "first"},
+            {"id": "b", "rank": 1, "score": 0.8, "reasoning": "duplicate"},
+        ]
+    })
+
+    mock_client = AsyncMock()
+    mock_client.chat.completions.create = AsyncMock(return_value=make_mock_response(invalid_response))
+
+    with pytest.raises(ValueError, match="duplicate ranks"):
+        await rank_items(mock_client, "gpt-4o-mini", items, top_n=5)
+    assert mock_client.chat.completions.create.call_count == 3
 
 
 @pytest.mark.asyncio
