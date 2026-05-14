@@ -8,35 +8,41 @@ A daily Telegram channel that automatically collects the most important AI news 
 
 ## What it does
 
-Every morning at 09:00 Europe/Moscow (configurable), the bot:
+Every morning at 09:00 Europe/Moscow, the bot:
 
 1. **Collects** fresh items from 9 RSS feeds (OpenAI, DeepMind, TechCrunch, Wired, The Verge, Ars Technica, MIT Tech Review, VentureBeat, Hacker News) and any configured Telegram channels.
 2. **Deduplicates** against everything it has ever seen (by canonical URL hash + title hash).
 3. **Filters** items older than 36 hours and those without enough content.
 4. **Ranks** all candidates in a single OpenAI call and picks the top 5.
-5. **Summarizes and translates** each selected story to Russian with a title, 3–5 bullets, a "почему важно" note, and hashtags.
-6. **Formats** one Telegram HTML message under 4096 chars (auto-shrinks if needed).
-7. **Publishes** once to the configured channel.
-8. **Stores** every step in Supabase — raw items, ranking reasoning, generated text, and digest metadata — for a complete audit trail.
+5. **Picks a hero photo** from the rank-1 story's RSS-supplied image (with fallback through lower ranks and finally a bundled default banner).
+6. **Summarizes and translates** each selected story to Russian with a title, 3–5 bullets, a "почему важно" note, and hashtags.
+7. **Formats** one Telegram HTML digest under 4096 chars (auto-shrinks if needed).
+8. **Publishes** as **two consecutive messages** to the channel: the hero photo with a short caption, then the full digest text.
+9. **Stores** every step in Supabase — raw items, ranking reasoning, generated text, hero metadata, and digest message ids — for a complete audit trail.
 
-The whole flow runs as a single Dockerized Python service with APScheduler firing the daily job.
+Two deployment modes are supported:
+
+- **GitHub Actions (recommended)** — a daily cron in `.github/workflows/daily-digest.yml`. Zero infrastructure, free for this workload, secrets encrypted at rest.
+- **Self-hosted with APScheduler** — `docker compose up -d` on any always-on machine. Useful if you want precise schedule timing or you're already running a VPS.
 
 ---
 
 ## Architecture
 
 ```
-┌──────────────┐
-│  APScheduler │  (daily cron 09:00 Moscow)
-└──────┬───────┘
-       │
-       ▼
+┌──────────────────────────┐
+│ GitHub Actions cron      │  (09:00 Europe/Moscow — primary)
+│ or APScheduler in Docker │  (alternative for self-hosted)
+└──────────────┬───────────┘
+               │
+               ▼
 ┌─────────────────────────────────────────────────────────┐
 │                    Pipeline orchestrator                │
 │                                                         │
 │  ┌──────────┐  ┌──────────┐  ┌──────────────┐           │
 │  │   RSS    │  │ Telegram │  │ Canonicalize │           │
-│  │collector │  │collector │→ │   + hash     │           │
+│  │collector │  │collector │→ │  + hash      │           │
+│  │ + media  │  │          │  │  + media URL │           │
 │  └────┬─────┘  └────┬─────┘  └──────┬───────┘           │
 │       └──────┬──────┘                │                  │
 │              ▼                       ▼                  │
@@ -46,25 +52,31 @@ The whole flow runs as a single Dockerized Python service with APScheduler firin
 │       └──────┬──────┘         └─────────────┘           │
 │              ▼                                          │
 │       ┌─────────────┐         ┌─────────────┐           │
-│       │   Ranker    │ ──────→ │ Supabase    │           │
+│       │   Ranker    │ ──────→ │  Supabase   │           │
 │       │ (OpenAI)    │         │ ranked_items│           │
 │       └──────┬──────┘         └─────────────┘           │
 │              ▼                                          │
 │       ┌─────────────┐         ┌─────────────┐           │
-│       │ Summarize + │ ──────→ │  Supabase   │           │
+│       │ Summarize + │ ──────→ │   Supabase  │           │
 │       │ translate   │         │processed_items          │
 │       │ (OpenAI)    │         └─────────────┘           │
 │       └──────┬──────┘                                   │
 │              ▼                                          │
+│       ┌─────────────┐                                   │
+│       │  Hero pick  │  (rank-1 image → fallback ranks   │
+│       │             │   → bundled default banner)       │
+│       └──────┬──────┘                                   │
+│              ▼                                          │
 │       ┌─────────────┐         ┌─────────────┐           │
 │       │  Formatter  │ ──────→ │  Supabase   │           │
-│       │   (HTML)    │         │   digests   │           │
+│       │ (HTML+capt) │         │   digests   │           │
 │       └──────┬──────┘         │ (pending)   │           │
 │              ▼                └─────────────┘           │
-│       ┌─────────────┐                                   │
-│       │  Telegram   │                                   │
-│       │   Bot API   │ → @ainewsdigestme                 │
-│       └─────────────┘                                   │
+│       ┌─────────────────┐                               │
+│       │ Telegram Bot API│                               │
+│       │ 1) sendPhoto    │ → @ainewsdigestme             │
+│       │ 2) sendMessage  │                               │
+│       └─────────────────┘                               │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -75,6 +87,9 @@ The whole flow runs as a single Dockerized Python service with APScheduler firin
 - **Pending digest row** is written *before* the Telegram send, so a network timeout can never produce an unrecorded publish.
 - **No automatic retry on publish** — if Telegram times out ambiguously, the run is marked failed and requires manual inspection.
 - **Schema-validated LLM output** — every OpenAI response is parsed with Pydantic before it touches the rest of the pipeline.
+- **Two-message publish layout** — Telegram caps photo captions at 1024 chars; the full digest is ~3500. Sending hero + digest as two messages preserves all content without truncation.
+- **Hero fallback chain** — broken hotlink falls back to the bundled `assets/default_hero.png`. If that also fails, the digest still publishes text-only — the hero is never a blocker for shipping.
+- **Kill switch** — `ENABLE_HERO_MEDIA=false` reverts to text-only publishing without a code change.
 
 ---
 
@@ -89,7 +104,8 @@ The whole flow runs as a single Dockerized Python service with APScheduler firin
 | Telegram write | `python-telegram-bot` (Bot API) |
 | RSS | `httpx` + `feedparser` |
 | Database | Supabase (managed Postgres) |
-| Scheduler | APScheduler v3 |
+| Scheduler | GitHub Actions cron (primary) or APScheduler v3 (self-hosted) |
+| Default banner | Pillow (`PIL`), used by `src/scripts/generate_default_hero.py` |
 | Config | `pydantic-settings` + YAML |
 | Retries | `tenacity` |
 | Container | `python:3.12-slim` |
@@ -147,17 +163,23 @@ cp .env.example .env
 
 # 3. Create database schema in Supabase SQL Editor
 # (paste contents of schema.sql, click Run)
+# If upgrading from an older version, the file already includes safe
+# `alter table ... add column if not exists` statements for the hero columns.
 
 # 4. Configure RSS sources (optional — defaults are fine)
 # edit config/sources.yaml
 
-# 5. Dry run (no Telegram publish, just preview the digest)
+# 5. (optional) Regenerate the default hero banner with your own branding
+uv run python -m src.scripts.generate_default_hero
+
+# 6. Dry run (no Telegram publish, just preview the digest + hero pick)
 uv run python -m src.main --once --dry-run
 
-# 6. Real run (publishes to your channel once)
+# 7. Real run (publishes hero + digest to your channel once)
 uv run python -m src.main --once
 
-# 7. Production mode (runs every day at SCHEDULE_HOUR:SCHEDULE_MINUTE)
+# 8. Production mode (runs every day at SCHEDULE_HOUR:SCHEDULE_MINUTE)
+#    Skip this step if you're deploying via GitHub Actions instead.
 uv run python -m src.main
 ```
 
@@ -193,17 +215,73 @@ DIGEST_TOP_N=5          # max items per digest
 MIN_DIGEST_ITEMS=3      # skip run if fewer new items
 MAX_AGE_HOURS=36        # drop items older than this
 LOG_LEVEL=INFO
+
+# Hero media (per-digest photo on top)
+ENABLE_HERO_MEDIA=true                    # set false for instant text-only fallback
+DEFAULT_HERO_PATH=assets/default_hero.png # used when no item has media
 ```
 
 ---
 
-## Docker
+## Deployment options
+
+### Option A — GitHub Actions (recommended)
+
+A daily cron in `.github/workflows/daily-digest.yml` runs the pipeline on GitHub-hosted Ubuntu runners at 06:00 UTC = 09:00 Europe/Moscow. The workflow also exposes a manual **Run workflow** button in the Actions tab.
+
+**Why this is the right default:**
+
+- **Zero infrastructure.** No VPS to maintain, no `docker compose ps` to babysit.
+- **Free for this workload.** ~2 minutes/day × ~30 runs/month = ~60 free minutes; GitHub gives 2,000/month on private repos and unlimited on public.
+- **Encrypted secrets.** OpenAI / Telegram / Supabase keys live in encrypted Repository Secrets; they're injected as env vars at runtime, then destroyed with the runner.
+- **One-click reruns.** Failed run? Click "Re-run all jobs" in the Actions tab.
+
+**One-time setup:** see [`docs/github-actions-setup.md`](docs/github-actions-setup.md) for the full walkthrough — adding 5 Repository Secrets, running the schema migration in Supabase, and triggering the first manual run.
+
+### Option B — Self-hosted (Docker)
 
 ```bash
 docker compose up -d --build
 ```
 
-`docker-compose.yml` mounts `./sessions` and `./config` at runtime and reads `./.env`. The image itself contains no secrets.
+`docker-compose.yml` mounts `./sessions` and `./config` at runtime and reads `./.env`. The image itself contains no secrets. APScheduler fires the daily job at exact schedule time.
+
+Use this when you need precise scheduling (GitHub cron drifts 5–15 min), you're already running a VPS for other workloads, or you want the bot to read Telegram channels in real time without uploading a Telethon session as a base64 secret.
+
+---
+
+## Cost per run
+
+Default config: `gpt-4o-mini`, top-5 digest, ~50 candidate items per day.
+
+**Per-call breakdown:**
+
+| Call | Count per run | Typical input tokens | Typical output tokens |
+| --- | --- | --- | --- |
+| Ranker (one batch call over all candidates) | 1 | ~10,000 | ~600 |
+| Summarizer (one per selected story) | 5 | ~1,200 each | ~150 each |
+| Translator (one per selected story) | 5 | ~400 each | ~300 each |
+
+**Token totals per run:** ~18,000 input + ~2,850 output = ~21,000 tokens
+
+**gpt-4o-mini pricing** (as of OpenAI's published rates):
+
+- Input: $0.15 per 1M tokens
+- Output: $0.60 per 1M tokens
+
+**Math per run:**
+
+- Input cost: 18,000 / 1,000,000 × $0.15 = **$0.0027**
+- Output cost: 2,850 / 1,000,000 × $0.60 = **$0.0017**
+- **Total per run: ~$0.0044 (less than half a cent)**
+
+**Monthly (30 daily runs):** ~$0.13
+
+**Annual:** ~$1.60
+
+GitHub Actions and Supabase free tiers cover the rest. The whole bot runs on **roughly $2 per year**.
+
+If you switch `OPENAI_MODEL` to `gpt-4o` (10× the cost), expect ~$0.04 per run → ~$1.30/month → ~$16/year. Still cheap, but you'd notice the difference.
 
 ---
 
@@ -214,7 +292,7 @@ uv run ruff check .
 uv run pytest
 ```
 
-59 tests cover canonicalization, hash generation, dedupe, RSS parsing, AI client mocking, formatter escaping, length-reduction, and the full pipeline orchestrator with mocked OpenAI/Telegram.
+87 tests cover canonicalization, hash generation, dedupe, RSS parsing, media extraction from each feed source type, AI client mocking, formatter escaping, length-reduction, hero caption building, the two-stage hero/digest publisher with three fallback paths, and the full pipeline orchestrator with mocked OpenAI/Telegram.
 
 ---
 
@@ -222,37 +300,45 @@ uv run pytest
 
 ```
 ai-news-telegram-bot/
+├── .github/
+│   └── workflows/
+│       └── daily-digest.yml      # GitHub Actions cron + manual dispatch
+├── assets/
+│   └── default_hero.png          # bundled fallback banner for the hero photo
 ├── config/
-│   └── sources.yaml          # RSS feeds + Telegram channels + filters
+│   └── sources.yaml              # RSS feeds + Telegram channels + filters
+├── docs/
+│   └── github-actions-setup.md   # secrets, migration, manual run walkthrough
 ├── src/
-│   ├── main.py               # CLI entry point (--once, --dry-run)
-│   ├── config.py             # pydantic-settings loader
-│   ├── scheduler.py          # APScheduler wrapper
-│   ├── pipeline.py           # run_daily() orchestrator
+│   ├── main.py                   # CLI entry point (--once, --dry-run)
+│   ├── config.py                 # pydantic-settings loader (incl. ENABLE_HERO_MEDIA)
+│   ├── scheduler.py              # APScheduler wrapper (self-hosted mode)
+│   ├── pipeline.py               # run_daily() orchestrator — hero pick lives here
 │   ├── collectors/
-│   │   ├── base.py           # CollectedItem, hashing, canonicalization
-│   │   ├── rss.py            # httpx + feedparser
-│   │   └── telegram.py       # Telethon iterator
+│   │   ├── base.py               # CollectedItem (with media_url/type), extractor
+│   │   ├── rss.py                # httpx + feedparser, populates media fields
+│   │   └── telegram.py           # Telethon iterator
 │   ├── ai/
-│   │   ├── client.py         # OpenAI async client + retry
-│   │   ├── ranker.py         # rank candidates in one call
-│   │   ├── summarizer.py     # per-item summary
-│   │   ├── translator.py     # English → Russian + Pydantic validation
-│   │   └── prompts/          # system prompts
+│   │   ├── client.py             # OpenAI async client + retry
+│   │   ├── ranker.py             # rank candidates in one call
+│   │   ├── summarizer.py         # per-item summary
+│   │   ├── translator.py         # English → Russian + Pydantic validation
+│   │   └── prompts/              # system prompts
 │   ├── publisher/
-│   │   ├── formatter.py      # HTML digest builder with length reduction
-│   │   └── telegram_bot.py   # Bot API send_message wrapper
+│   │   ├── formatter.py          # HTML digest + hero caption builder
+│   │   └── telegram_bot.py       # sendPhoto + sendMessage with fallback
 │   ├── database/
-│   │   ├── client.py         # supabase-py wrapper
-│   │   ├── models.py         # row dataclasses
-│   │   └── repository.py     # create_run, insert_raw_items, etc.
+│   │   ├── client.py             # supabase-py wrapper
+│   │   ├── models.py             # row dataclasses
+│   │   └── repository.py         # create_run, insert_raw_items, etc.
 │   └── scripts/
-│       └── telethon_login.py # one-time interactive session creator
-├── tests/                    # 59 unit + integration tests
-├── schema.sql                # 5-table Postgres schema
+│       ├── telethon_login.py     # one-time interactive session creator
+│       └── generate_default_hero.py  # regenerate the banner PNG via Pillow
+├── tests/                        # 87 unit + integration tests
+├── schema.sql                    # 5-table Postgres schema (incl. hero columns)
 ├── Dockerfile
 ├── docker-compose.yml
-├── .env.example              # template (no real keys)
+├── .env.example                  # template (no real keys)
 └── pyproject.toml
 ```
 
@@ -267,7 +353,10 @@ ai-news-telegram-bot/
 | OpenAI ranking fails after retries | Mark run failed, publish nothing |
 | Translation fails for one item | Retry; if still invalid, drop the item |
 | Fewer than `MIN_DIGEST_ITEMS` new items | Mark run skipped, publish nothing |
-| Telegram publish definitively fails | Mark digest + run failed, no auto-retry |
+| No item has a usable hero image | Use bundled `assets/default_hero.png` |
+| Hero `sendPhoto` rejected (hotlink blocked, etc.) | Fall back to default banner |
+| Default banner also fails | Skip hero, publish text-only digest, log warning |
+| Telegram digest publish definitively fails | Mark digest + run failed, no auto-retry |
 | Telegram publish ambiguous timeout | Mark digest failed, require manual channel check |
 | Unexpected exception | Caught at top level, traceback stored in `runs.error`, scheduler stays alive |
 
