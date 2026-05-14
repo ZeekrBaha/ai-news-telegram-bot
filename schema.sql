@@ -69,5 +69,14 @@ create table digests (
   channel_id text not null,
   posted_at timestamptz,
   item_ids uuid[] not null,
-  error text
+  error text,
+  hero_message_id bigint,
+  hero_media_url text,
+  hero_media_type text
 );
+
+-- Migration for existing deployments: add hero columns to an existing digests table.
+-- Safe to run multiple times.
+alter table digests add column if not exists hero_message_id bigint;
+alter table digests add column if not exists hero_media_url text;
+alter table digests add column if not exists hero_media_type text;

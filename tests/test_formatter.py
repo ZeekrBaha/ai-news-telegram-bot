@@ -1,6 +1,12 @@
 import pytest
 from datetime import date
-from src.publisher.formatter import format_digest, is_valid_url, MAX_TELEGRAM_LENGTH
+from src.publisher.formatter import (
+    MAX_CAPTION_LENGTH,
+    MAX_TELEGRAM_LENGTH,
+    format_digest,
+    format_hero_caption,
+    is_valid_url,
+)
 
 
 def make_item(
@@ -99,3 +105,42 @@ def test_is_valid_url():
     assert is_valid_url("ftp://example.com") is False
     assert is_valid_url(None) is False
     assert is_valid_url("") is False
+
+
+def test_format_hero_caption_basic():
+    lead = {"title_ru": "OpenAI запускает новую модель", "url": "https://example.com/x"}
+    caption = format_hero_caption(lead, channel_date=date(2026, 5, 14))
+    assert "AI Дайджест 14.05.2026" in caption
+    assert "OpenAI запускает новую модель" in caption
+    assert 'href="https://example.com/x"' in caption
+    assert len(caption) <= MAX_CAPTION_LENGTH
+
+
+def test_format_hero_caption_escapes_html():
+    lead = {"title_ru": '<script>alert(1)</script>', "url": "https://example.com/x"}
+    caption = format_hero_caption(lead, channel_date=date(2026, 5, 14))
+    assert "<script>" not in caption
+    assert "&lt;script&gt;" in caption
+
+
+def test_format_hero_caption_unsafe_url_no_link():
+    lead = {"title_ru": "Заголовок", "url": "javascript:alert(1)"}
+    caption = format_hero_caption(lead, channel_date=date(2026, 5, 14))
+    assert "javascript:" not in caption
+    assert "href" not in caption
+    assert "<b>Заголовок</b>" in caption
+
+
+def test_format_hero_caption_trims_long_title():
+    huge_title = "Очень длинный заголовок " * 100
+    lead = {"title_ru": huge_title, "url": "https://example.com/x"}
+    caption = format_hero_caption(lead, channel_date=date(2026, 5, 14))
+    assert len(caption) <= MAX_CAPTION_LENGTH
+    assert "…" in caption
+
+
+def test_format_hero_caption_defaults_to_today():
+    lead = {"title_ru": "Заголовок", "url": "https://example.com/x"}
+    caption = format_hero_caption(lead)
+    assert "AI Дайджест" in caption
+    assert "Заголовок" in caption

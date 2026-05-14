@@ -62,6 +62,9 @@ def mock_settings():
     s.supabase_url = "https://test.supabase.co"
     s.supabase_service_key = "test_key"
     s.telegram_channels = []
+    # Hero-media defaults — existing tests exercise the text-only publish_digest path.
+    s.enable_hero_media = False
+    s.default_hero_path = "assets/default_hero.png"
     return s
 
 
@@ -306,6 +309,122 @@ def test_publish_failure_marks_digest_and_run_failed(mock_settings):
     mock_finalize.assert_called_once()
     finalize_args = mock_finalize.call_args[0]
     assert finalize_args[2] == "failed", f"Expected 'failed', got {finalize_args[2]!r}"
+
+
+def _make_collected_item_with_media(url_hash: str, media_url: str | None, media_type: str | None = "photo"):
+    """Like _make_collected_item but with media_url/media_type set."""
+    item = _make_collected_item(url_hash, f"t{url_hash}")
+    item.media_url = media_url
+    item.media_type = media_type if media_url else None
+    return item
+
+
+def test_pipeline_picks_rank1_media_when_available(mock_settings):
+    """If rank-1 has media, hero source is rank-1's media."""
+    mock_settings.enable_hero_media = True
+    run_id = str(uuid4())
+    digest_id = str(uuid4())
+
+    items = [
+        _make_collected_item_with_media("h0", "https://cdn.example.com/lead.jpg"),
+        _make_collected_item_with_media("h1", "https://cdn.example.com/two.jpg"),
+        _make_collected_item_with_media("h2", None),
+    ]
+    choices = [_make_choice(i + 1, f"h{i}") for i in range(3)]
+    raw_rows = [_make_raw_row(f"h{i}") for i in range(3)]
+    ranked_rows_flat = [{"rank": i + 1, "id": str(uuid4())} for i in range(3)]
+
+    existing = MagicMock()
+    existing.url_hashes = set()
+    existing.title_hashes = set()
+
+    captured: dict = {}
+
+    async def fake_publish_with_hero(**kwargs):
+        captured.update(kwargs)
+        return 700, 701
+
+    with patch("src.pipeline.get_client"), \
+         patch("src.pipeline.get_ai_client"), \
+         patch("src.pipeline.load_sources", return_value=_make_sources_mock()), \
+         patch("src.pipeline.create_run", return_value=run_id), \
+         patch("src.pipeline.finalize_run"), \
+         patch("src.pipeline.find_existing_hashes", return_value=existing), \
+         patch("src.pipeline.insert_raw_items", return_value=raw_rows), \
+         patch("src.pipeline.record_ranked_items", return_value=ranked_rows_flat), \
+         patch("src.pipeline.record_processed_items"), \
+         patch("src.pipeline.create_pending_digest", return_value=digest_id) as mock_create, \
+         patch("src.pipeline.mark_digest_published") as mock_mark_pub, \
+         patch("src.pipeline.mark_digest_failed"), \
+         patch("src.pipeline.rank_items", new=AsyncMock(return_value=choices)), \
+         patch("src.pipeline.summarize_item", new=AsyncMock(return_value="summary")), \
+         patch("src.pipeline.translate_item", new=AsyncMock(return_value=_make_translated())), \
+         patch("src.pipeline.publish_digest_with_hero", new=AsyncMock(side_effect=fake_publish_with_hero)), \
+         patch("src.pipeline.format_digest", return_value=("digest text", "chash123")):
+
+        rss_mock = MagicMock()
+        rss_mock.collect = AsyncMock(return_value=items)
+        with patch("src.pipeline.RssCollector", return_value=rss_mock):
+            asyncio.run(run_daily(mock_settings, dry_run=False))
+
+    assert captured["hero_source"] == "https://cdn.example.com/lead.jpg"
+    assert captured["hero_type"] == "photo"
+    # create_pending_digest got the hero metadata
+    create_kwargs = mock_create.call_args.kwargs
+    assert create_kwargs["hero_media_url"] == "https://cdn.example.com/lead.jpg"
+    assert create_kwargs["hero_media_type"] == "photo"
+    # mark_digest_published got the hero message id
+    pub_kwargs = mock_mark_pub.call_args.kwargs
+    assert pub_kwargs["hero_message_id"] == 700
+
+
+def test_pipeline_falls_back_to_default_when_no_item_has_media(mock_settings):
+    """If no selected item carries media, the default banner is used."""
+    mock_settings.enable_hero_media = True
+    mock_settings.default_hero_path = "assets/default_hero.png"
+    run_id = str(uuid4())
+    digest_id = str(uuid4())
+
+    items = [_make_collected_item_with_media(f"h{i}", None) for i in range(3)]
+    choices = [_make_choice(i + 1, f"h{i}") for i in range(3)]
+    raw_rows = [_make_raw_row(f"h{i}") for i in range(3)]
+    ranked_rows_flat = [{"rank": i + 1, "id": str(uuid4())} for i in range(3)]
+
+    existing = MagicMock()
+    existing.url_hashes = set()
+    existing.title_hashes = set()
+
+    captured: dict = {}
+
+    async def fake_publish_with_hero(**kwargs):
+        captured.update(kwargs)
+        return None, 801  # hero failed scenarios are independent — test default path
+
+    with patch("src.pipeline.get_client"), \
+         patch("src.pipeline.get_ai_client"), \
+         patch("src.pipeline.load_sources", return_value=_make_sources_mock()), \
+         patch("src.pipeline.create_run", return_value=run_id), \
+         patch("src.pipeline.finalize_run"), \
+         patch("src.pipeline.find_existing_hashes", return_value=existing), \
+         patch("src.pipeline.insert_raw_items", return_value=raw_rows), \
+         patch("src.pipeline.record_ranked_items", return_value=ranked_rows_flat), \
+         patch("src.pipeline.record_processed_items"), \
+         patch("src.pipeline.create_pending_digest", return_value=digest_id), \
+         patch("src.pipeline.mark_digest_published"), \
+         patch("src.pipeline.mark_digest_failed"), \
+         patch("src.pipeline.rank_items", new=AsyncMock(return_value=choices)), \
+         patch("src.pipeline.summarize_item", new=AsyncMock(return_value="summary")), \
+         patch("src.pipeline.translate_item", new=AsyncMock(return_value=_make_translated())), \
+         patch("src.pipeline.publish_digest_with_hero", new=AsyncMock(side_effect=fake_publish_with_hero)), \
+         patch("src.pipeline.format_digest", return_value=("digest text", "chash123")):
+
+        rss_mock = MagicMock()
+        rss_mock.collect = AsyncMock(return_value=items)
+        with patch("src.pipeline.RssCollector", return_value=rss_mock):
+            asyncio.run(run_daily(mock_settings, dry_run=False))
+
+    assert captured["hero_source"] == "assets/default_hero.png"
+    assert captured["hero_type"] == "photo"
 
 
 def test_publish_timeout_records_manual_check_message(mock_settings):

@@ -12,6 +12,7 @@ from src.collectors.base import (
     canonical_url,
     compute_title_hash,
     compute_url_hash,
+    extract_media_from_entry,
     sha256_text,
     strip_html,
     truncate_content,
@@ -83,6 +84,8 @@ class RssCollector(Collector):
         url_hash = compute_url_hash(url, "rss", source_name, source_item_id)
         title_hash = compute_title_hash(title)
 
+        media_url, media_type = extract_media_from_entry(entry)
+
         return CollectedItem(
             source_type="rss",
             source_name=source_name,
@@ -95,4 +98,6 @@ class RssCollector(Collector):
             content=content,
             published_at=published_at,
             raw=dict(entry),
+            media_url=media_url,
+            media_type=media_type,
         )

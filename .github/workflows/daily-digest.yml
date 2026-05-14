@@ -1,0 +1,95 @@
+name: Daily Digest
+
+on:
+  schedule:
+    # 06:00 UTC = 09:00 Europe/Moscow. GitHub cron is best-effort and may drift
+    # 5–15 min during high load — fine for a daily news digest.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    # Lets us trigger a run manually from the Actions tab in the GitHub UI.
+    inputs:
+      dry_run:
+        description: "Dry run (build digest but do not publish to Telegram)"
+        type: boolean
+        default: false
+
+concurrency:
+  # Prevent overlapping runs (e.g. manual + scheduled firing within minutes).
+  group: daily-digest
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      # OpenAI
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4o-mini' }}
+
+      # Telegram — bot side (publishing)
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+
+      # Telegram — user side (reading channels). Required by Settings() even if
+      # we don't read Telegram channels — defaults below keep the bot RSS-only.
+      # Override by adding TELEGRAM_API_ID / TELEGRAM_API_HASH secrets if you
+      # want to read Telegram channels as a news source.
+      TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID || '0' }}
+      TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH || 'placeholder' }}
+      TELETHON_SESSION_NAME: reader
+
+      # Supabase
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+
+      # Tuning — non-secret, configurable via Repository Variables.
+      SCHEDULE_HOUR: "9"
+      SCHEDULE_MINUTE: "0"
+      TIMEZONE: "Europe/Moscow"
+      DIGEST_TOP_N: ${{ vars.DIGEST_TOP_N || '5' }}
+      MIN_DIGEST_ITEMS: ${{ vars.MIN_DIGEST_ITEMS || '3' }}
+      MAX_AGE_HOURS: ${{ vars.MAX_AGE_HOURS || '36' }}
+      LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
+      ENABLE_HERO_MEDIA: ${{ vars.ENABLE_HERO_MEDIA || 'true' }}
+      DEFAULT_HERO_PATH: assets/default_hero.png
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Restore Telethon session (if provided)
+        # Optional: silently no-ops when TELETHON_SESSION_BASE64 secret is absent.
+        # Without it, the Telegram collector is skipped and the pipeline goes
+        # RSS-only — which is fine for now.
+        env:
+          TELETHON_SESSION_B64: ${{ secrets.TELETHON_SESSION_BASE64 }}
+        run: |
+          if [ -z "$TELETHON_SESSION_B64" ]; then
+            echo "No Telethon session secret set — running RSS-only."
+            exit 0
+          fi
+          mkdir -p sessions
+          printf '%s' "$TELETHON_SESSION_B64" | base64 -d > sessions/reader.session
+          chmod 600 sessions/reader.session
+          echo "Telethon session restored."
+
+      - name: Run digest pipeline
+        run: |
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            uv run python -m src.main --once --dry-run
+          else
+            uv run python -m src.main --once
+          fi

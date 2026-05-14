@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 logger = logging.getLogger(__name__)
 
 MAX_TELEGRAM_LENGTH = 4096
+MAX_CAPTION_LENGTH = 1024
 
 
 def is_valid_url(url: str | None) -> bool:
@@ -136,3 +137,51 @@ def format_digest(
         f"Digest is {len(digest)} chars, exceeds {MAX_TELEGRAM_LENGTH} even with {min_items} items. "
         "Refusing to publish."
     )
+
+
+def format_hero_caption(
+    lead_item: dict,
+    channel_date: date | None = None,
+) -> str:
+    """
+    Build a short caption that sits under the hero photo.
+
+    Caption layout:
+        <b>🤖 AI Дайджест {date}</b>
+
+        Главная история: <a href="...">{title}</a>
+
+    Hard-capped at MAX_CAPTION_LENGTH (1024 chars). If the formatted caption
+    overflows, the title is trimmed with an ellipsis until it fits.
+    """
+    if channel_date is None:
+        channel_date = date.today()
+
+    date_str = channel_date.strftime("%d.%m.%Y")
+    header = f"<b>🤖 AI Дайджест {date_str}</b>"
+
+    title = lead_item.get("title_ru", "").strip()
+    url = lead_item.get("url")
+
+    def assemble(t: str) -> str:
+        safe_title = html.escape(t)
+        if is_valid_url(url):
+            title_line = f'Главная история: <a href="{html.escape(url)}">{safe_title}</a>'
+        else:
+            title_line = f"Главная история: <b>{safe_title}</b>"
+        return f"{header}\n\n{title_line}"
+
+    caption = assemble(title)
+    if len(caption) <= MAX_CAPTION_LENGTH:
+        return caption
+
+    # Shrink the raw title until the rendered caption fits. Title gets an ellipsis.
+    stem = title
+    while len(stem) > 10:
+        stem = stem[:-5].rstrip()
+        candidate = assemble(stem + "…")
+        if len(candidate) <= MAX_CAPTION_LENGTH:
+            return candidate
+
+    # Last resort: hard-cut the rendered caption.
+    return assemble(stem + "…")[:MAX_CAPTION_LENGTH]

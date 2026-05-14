@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     min_digest_items: int = 3
     max_age_hours: int = 36
     log_level: str = "INFO"
+    enable_hero_media: bool = True
+    default_hero_path: str = "assets/default_hero.png"
 
     @field_validator("timezone")
     @classmethod

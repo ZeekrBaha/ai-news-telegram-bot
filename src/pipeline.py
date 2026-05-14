@@ -23,8 +23,8 @@ from src.database.repository import (
     record_processed_items,
     record_ranked_items,
 )
-from src.publisher.formatter import format_digest
-from src.publisher.telegram_bot import publish_digest
+from src.publisher.formatter import format_digest, format_hero_caption
+from src.publisher.telegram_bot import publish_digest, publish_digest_with_hero
 
 logger = logging.getLogger(__name__)
 
@@ -288,12 +288,43 @@ async def run_daily(settings: Settings, dry_run: bool = False) -> None:
             min_items=settings.min_digest_items,
         )
 
+        # --- Step 8b: Pick hero media ---
+        # Walk selected items in rank order; first one with media_url wins. If none
+        # of the day's items carry media, fall back to the bundled default banner.
+        hero_source: str
+        hero_type: str
+        hero_origin: str  # "item" or "default" — for logging only
+        rank_sorted = sorted(selected_items, key=lambda pair: pair[0].rank)
+        chosen_media: tuple[str, str] | None = None
+        for _, item in rank_sorted:
+            if item.media_url and item.media_type:
+                chosen_media = (item.media_url, item.media_type)
+                break
+        if chosen_media is None:
+            hero_source = settings.default_hero_path
+            hero_type = "photo"
+            hero_origin = "default"
+        else:
+            hero_source, hero_type = chosen_media
+            hero_origin = "item"
+
+        # Caption uses the rank-1 translated title (whatever's first in `processed`).
+        lead_for_caption = digest_items[0] if digest_items else {"title_ru": "", "url": None}
+        hero_caption = format_hero_caption(lead_for_caption)
+
         # --- Step 9: Dry run path ---
         if dry_run:
+            logger.info(
+                "DRY RUN - hero: source=%s type=%s origin=%s",
+                hero_source, hero_type, hero_origin,
+            )
             logger.info("DRY RUN - digest preview:\n%s", digest_text)
             print("\n" + "=" * 60)
             print("DRY RUN DIGEST PREVIEW")
             print("=" * 60)
+            print(f"[HERO] source={hero_source} type={hero_type} origin={hero_origin}")
+            print(f"[HERO CAPTION]\n{hero_caption}")
+            print("-" * 60)
             print(digest_text)
             print("=" * 60 + "\n")
             finalize_run(
@@ -312,16 +343,35 @@ async def run_daily(settings: Settings, dry_run: bool = False) -> None:
             channel_id=settings.telegram_channel_id,
             content_hash=content_hash,
             item_ids=item_ids,
+            hero_media_url=hero_source if settings.enable_hero_media else None,
+            hero_media_type=hero_type if settings.enable_hero_media else None,
         )
         logger.info("Created pending digest %s", digest_id)
 
         # --- Step 11: Publish ---
+        hero_message_id: int | None = None
         try:
-            message_id = await publish_digest(
-                bot_token=settings.telegram_bot_token,
-                channel_id=settings.telegram_channel_id,
-                text=digest_text,
-            )
+            if settings.enable_hero_media:
+                hero_message_id, message_id = await publish_digest_with_hero(
+                    bot_token=settings.telegram_bot_token,
+                    channel_id=settings.telegram_channel_id,
+                    hero_source=hero_source,
+                    hero_type=hero_type,  # type: ignore[arg-type]
+                    hero_caption=hero_caption,
+                    digest_text=digest_text,
+                    default_hero_path=settings.default_hero_path,
+                )
+                logger.info(
+                    "Published with hero: hero_id=%s digest_id=%s origin=%s",
+                    hero_message_id, message_id, hero_origin,
+                )
+            else:
+                message_id = await publish_digest(
+                    bot_token=settings.telegram_bot_token,
+                    channel_id=settings.telegram_channel_id,
+                    text=digest_text,
+                )
+                logger.info("Published text-only (hero disabled), message_id=%s", message_id)
         except Exception as e:
             if _is_publish_timeout(e):
                 raise RuntimeError(
@@ -329,10 +379,9 @@ async def run_daily(settings: Settings, dry_run: bool = False) -> None:
                     "Manual channel check required before any retry."
                 ) from e
             raise
-        logger.info("Published digest, message_id=%s", message_id)
 
         # --- Step 12: Mark published ---
-        mark_digest_published(db, digest_id, message_id)
+        mark_digest_published(db, digest_id, message_id, hero_message_id=hero_message_id)
 
         # --- Step 13: Finalize run ---
         items_published = len(processed)

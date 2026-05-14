@@ -176,17 +176,28 @@ def create_pending_digest(
     channel_id: str,
     content_hash: str,
     item_ids: list[UUID],
+    hero_media_url: str | None = None,
+    hero_media_type: str | None = None,
 ) -> UUID:
-    """Create a pending digest row before publishing."""
-    result = client.table("digests").insert(
-        {
-            "run_id": str(run_id),
-            "status": "pending",
-            "content_hash": content_hash,
-            "channel_id": channel_id,
-            "item_ids": [str(iid) for iid in item_ids],
-        }
-    ).execute()
+    """Create a pending digest row before publishing.
+
+    `hero_media_url` and `hero_media_type` are best-effort metadata about what we
+    intend to send as the hero — they're recorded before the actual send so a
+    publish timeout still leaves a trail.
+    """
+    payload: dict[str, Any] = {
+        "run_id": str(run_id),
+        "status": "pending",
+        "content_hash": content_hash,
+        "channel_id": channel_id,
+        "item_ids": [str(iid) for iid in item_ids],
+    }
+    if hero_media_url is not None:
+        payload["hero_media_url"] = hero_media_url
+    if hero_media_type is not None:
+        payload["hero_media_type"] = hero_media_type
+
+    result = client.table("digests").insert(payload).execute()
     return UUID(result.data[0]["id"])
 
 
@@ -194,15 +205,17 @@ def mark_digest_published(
     client: Client,
     digest_id: UUID,
     message_id: int,
+    hero_message_id: int | None = None,
 ) -> None:
-    """Update digest to published with telegram message id."""
-    client.table("digests").update(
-        {
-            "status": "published",
-            "telegram_message_id": message_id,
-            "posted_at": datetime.now(timezone.utc).isoformat(),
-        }
-    ).eq("id", str(digest_id)).execute()
+    """Update digest to published with telegram message id (and optional hero id)."""
+    payload: dict[str, Any] = {
+        "status": "published",
+        "telegram_message_id": message_id,
+        "posted_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if hero_message_id is not None:
+        payload["hero_message_id"] = hero_message_id
+    client.table("digests").update(payload).eq("id", str(digest_id)).execute()
 
 
 def mark_digest_failed(
