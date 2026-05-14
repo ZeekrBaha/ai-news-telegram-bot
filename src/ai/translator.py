@@ -11,19 +11,24 @@ logger = logging.getLogger(__name__)
 class TranslatedItem(BaseModel):
     title_ru: str
     bullets_ru: list[str]
-    why_it_matters_ru: str
-    hashtags: list[str]
+    why_it_matters_ru: str = ""
+    hashtags: list[str] = []
 
     @field_validator("bullets_ru")
     @classmethod
     def validate_bullets(cls, v: list[str]) -> list[str]:
-        if not (3 <= len(v) <= 5):
-            raise ValueError(f"bullets_ru must have 3-5 items, got {len(v)}")
+        # 2-4 short sentences. Older prompt asked for 3-5; accept the wider 2-5
+        # window so we don't fail on borderline outputs.
+        if not (2 <= len(v) <= 5):
+            raise ValueError(f"bullets_ru must have 2-5 items, got {len(v)}")
         return v
 
     @field_validator("hashtags")
     @classmethod
     def validate_hashtags(cls, v: list[str]) -> list[str]:
+        # Hashtags removed from the editorial output, but the field is preserved
+        # for schema compatibility and bounded for safety if a future prompt
+        # re-introduces them.
         if len(v) > 5:
             raise ValueError(f"hashtags must have at most 5 items, got {len(v)}")
         for tag in v:
@@ -41,8 +46,8 @@ class TranslatedItem(BaseModel):
     @field_validator("why_it_matters_ru")
     @classmethod
     def validate_why(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("why_it_matters_ru cannot be empty")
+        # Allowed to be empty: the prompt asks the model to omit "why it matters"
+        # for routine product/research news.
         return v.strip()
 
 

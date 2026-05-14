@@ -11,10 +11,12 @@ from PIL import Image, ImageDraw, ImageFont
 
 OUTPUT_PATH = Path("assets/default_hero.png")
 WIDTH, HEIGHT = 1280, 720
-GRADIENT_TOP = (12, 18, 38)      # deep navy
-GRADIENT_BOTTOM = (45, 78, 142)  # cobalt
-TITLE = "🤖 AI Дайджест"
-SUBTITLE = "ainewsdigestme"
+# Restrained editorial palette — pretends to be a magazine cover, not a tech demo.
+GRADIENT_TOP = (18, 22, 30)      # near-black
+GRADIENT_BOTTOM = (38, 46, 60)   # graphite
+ACCENT = (210, 195, 140)         # muted gold rule
+TITLE = "AI Дайджест"
+SUBTITLE = "ежедневная сводка ключевых новостей"
 
 
 def _vertical_gradient(width: int, height: int) -> Image.Image:
@@ -50,21 +52,27 @@ def main() -> None:
     image = _vertical_gradient(WIDTH, HEIGHT)
     draw = ImageDraw.Draw(image)
 
-    title_font = _load_font(96)
-    subtitle_font = _load_font(40)
+    title_font = _load_font(108)
+    subtitle_font = _load_font(34)
 
     title_bbox = draw.textbbox((0, 0), TITLE, font=title_font)
     title_w = title_bbox[2] - title_bbox[0]
     title_h = title_bbox[3] - title_bbox[1]
     title_x = (WIDTH - title_w) // 2
-    title_y = (HEIGHT - title_h) // 2 - 40
-    draw.text((title_x, title_y), TITLE, fill=(255, 255, 255), font=title_font)
+    title_y = (HEIGHT - title_h) // 2 - 60
+    draw.text((title_x, title_y), TITLE, fill=(240, 236, 220), font=title_font)
+
+    # Thin accent rule under the title — quietly editorial.
+    rule_w = 240
+    rule_y = title_y + title_h + 36
+    rule_x = (WIDTH - rule_w) // 2
+    draw.rectangle((rule_x, rule_y, rule_x + rule_w, rule_y + 3), fill=ACCENT)
 
     subtitle_bbox = draw.textbbox((0, 0), SUBTITLE, font=subtitle_font)
     subtitle_w = subtitle_bbox[2] - subtitle_bbox[0]
     subtitle_x = (WIDTH - subtitle_w) // 2
-    subtitle_y = title_y + title_h + 40
-    draw.text((subtitle_x, subtitle_y), SUBTITLE, fill=(200, 215, 240), font=subtitle_font)
+    subtitle_y = rule_y + 36
+    draw.text((subtitle_x, subtitle_y), SUBTITLE, fill=(190, 195, 205), font=subtitle_font)
 
     image.save(OUTPUT_PATH, "PNG", optimize=True)
     print(f"Wrote {OUTPUT_PATH} ({OUTPUT_PATH.stat().st_size // 1024} KB)")

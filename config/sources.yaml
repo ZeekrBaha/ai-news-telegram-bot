@@ -1,4 +1,5 @@
 rss:
+  # Primary press
   - name: openai_blog
     url: https://openai.com/news/rss.xml
   - name: wired_ai
@@ -18,19 +19,34 @@ rss:
   - name: venturebeat_ai
     url: https://venturebeat.com/category/ai/feed
 
+  # Primary-source research blogs (announcements before the press cycle)
+  - name: google_research
+    url: https://research.google/blog/rss/
+  - name: huggingface_blog
+    url: https://huggingface.co/blog/feed.xml
+  - name: nvidia_blog
+    url: https://blogs.nvidia.com/feed/
+
+  # High-signal curators / analysts
+  - name: import_ai
+    url: https://importai.substack.com/feed
+  - name: last_week_in_ai
+    url: https://lastweekin.ai/feed
+  - name: one_useful_thing
+    url: https://www.oneusefulthing.org/feed
+
+  # Russian-native sources (no other Russian AI digest using this same toolkit
+  # will surface these — high differentiation for the channel)
+  - name: habr_ai
+    url: https://habr.com/ru/rss/hubs/artificial_intelligence/articles/all/
+  - name: habr_ml
+    url: https://habr.com/ru/rss/hubs/machine_learning/articles/all/
+
 telegram_channels: []
 
 filters:
-  keywords_include:
-    - AI
-    - LLM
-    - OpenAI
-    - Anthropic
-    - Claude
-    - GPT
-    - DeepMind
-    - agent
-    - automation
-    - robotics
+  # keywords_include intentionally omitted. The ranker can recognize relevance
+  # from titles + content directly; keyword pre-filtering was dropping good
+  # stories that didn't happen to use one of a handful of specific tokens.
   min_content_chars: 100
   max_age_hours: 36

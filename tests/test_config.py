@@ -19,10 +19,13 @@ def minimal_settings_env(monkeypatch):
 def test_load_sources_returns_sources_config():
     sources = load_sources("config/sources.yaml")
     assert isinstance(sources, SourcesConfig)
-    assert len(sources.rss) == 9
+    # 9 original press + 3 primary-source blogs + 3 curators + 2 Russian = 17
+    assert len(sources.rss) == 17
     names = [s.name for s in sources.rss]
     assert "openai_blog" in names
     assert "venturebeat_ai" in names
+    assert "habr_ai" in names
+    assert "import_ai" in names
 
 
 def test_load_sources_telegram_channels_empty():
@@ -32,8 +35,9 @@ def test_load_sources_telegram_channels_empty():
 
 def test_load_sources_filters_present():
     sources = load_sources("config/sources.yaml")
-    assert "keywords_include" in sources.filters
+    # keywords_include was removed; min_content_chars stays.
     assert "min_content_chars" in sources.filters
+    assert "keywords_include" not in sources.filters
 
 
 def test_load_sources_file_not_found():

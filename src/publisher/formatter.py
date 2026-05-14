@@ -9,6 +9,14 @@ logger = logging.getLogger(__name__)
 MAX_TELEGRAM_LENGTH = 4096
 MAX_CAPTION_LENGTH = 1024
 
+# Single brand tag rendered at the bottom of each digest in place of the
+# auto-generated hashtag wall. Looks intentional, not algorithm-sprinkled.
+CHANNEL_TAG = "#AIдайджест"
+
+# "Почему важно" line only renders for the top-N ranked items per digest. Set
+# low on purpose — a human editor doesn't justify every story.
+WHY_IT_MATTERS_TOP_N = 2
+
 
 def is_valid_url(url: str | None) -> bool:
     """Check if URL is safe to put in an href attribute."""
@@ -46,38 +54,29 @@ def format_digest(
     date_str = channel_date.strftime("%d.%m.%Y")
 
     def build_digest(current_items: list[dict]) -> str:
-        parts = [f"<b>🤖 AI Дайджест {date_str}</b>\n"]
+        parts = [f"<b>AI Дайджест {date_str}</b>\n"]
 
         for i, item in enumerate(current_items, 1):
             title_ru = html.escape(item["title_ru"])
-            url = item.get("url")
-
-            if is_valid_url(url):
-                title_line = f'{i}. <a href="{html.escape(url)}">{title_ru}</a>'
-            else:
-                title_line = f"{i}. <b>{title_ru}</b>"
+            # Titles are no longer hyperlinked. Source attribution by clickable
+            # title reads as "scraped + paraphrased"; we want editorial voice.
+            title_line = f"{i}. <b>{title_ru}</b>"
 
             parts.append(f"\n{title_line}")
 
             for bullet in item["bullets_ru"]:
                 parts.append(f"• {html.escape(bullet)}")
 
-            why = item.get("why_it_matters_ru", "")
-            if why:
-                parts.append(f"\n<i>💡 {html.escape(why)}</i>")
+            # "Why it matters" is reserved for the top stories so it reads like
+            # editorial emphasis rather than a per-item AI tic.
+            rank = item.get("rank", i)
+            if rank <= WHY_IT_MATTERS_TOP_N:
+                why = item.get("why_it_matters_ru", "")
+                if why:
+                    parts.append(f"\n<i>💡 {html.escape(why)}</i>")
 
-        # Deduped hashtags from all items
-        seen_tags: set[str] = set()
-        all_tags = []
-        for item in current_items:
-            for tag in item.get("hashtags", []):
-                tag_lower = tag.lower()
-                if tag_lower not in seen_tags:
-                    seen_tags.add(tag_lower)
-                    all_tags.append(tag)
-
-        if all_tags:
-            parts.append(f"\n{' '.join(all_tags)}")
+        # Single brand tag at the bottom — no hashtag confetti.
+        parts.append(f"\n{CHANNEL_TAG}")
 
         return "\n".join(parts)
 
@@ -158,17 +157,16 @@ def format_hero_caption(
         channel_date = date.today()
 
     date_str = channel_date.strftime("%d.%m.%Y")
-    header = f"<b>🤖 AI Дайджест {date_str}</b>"
+    header = f"<b>AI Дайджест {date_str}</b>"
 
     title = lead_item.get("title_ru", "").strip()
-    url = lead_item.get("url")
+    # We intentionally drop the source link from the caption. The article is
+    # implied by the photo + headline; clickable attribution reads as AI-slop.
+    _ = lead_item.get("url")  # accepted but unused; keeps callers compatible.
 
     def assemble(t: str) -> str:
         safe_title = html.escape(t)
-        if is_valid_url(url):
-            title_line = f'Главная история: <a href="{html.escape(url)}">{safe_title}</a>'
-        else:
-            title_line = f"Главная история: <b>{safe_title}</b>"
+        title_line = f"Главная история: <b>{safe_title}</b>"
         return f"{header}\n\n{title_line}"
 
     caption = assemble(title)
