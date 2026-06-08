@@ -1,10 +1,12 @@
 name: Daily Digest
 
 on:
-  schedule:
-    # 06:00 UTC = 09:00 Europe/Moscow. GitHub cron is best-effort and may drift
-    # 5–15 min during high load — fine for a daily news digest.
-    - cron: "0 6 * * *"
+  # Scheduled run disabled — bot no longer auto-posts to Telegram.
+  # Re-enable by uncommenting the schedule block below.
+  # schedule:
+  #   # 06:00 UTC = 09:00 Europe/Moscow. GitHub cron is best-effort and may drift
+  #   # 5–15 min during high load — fine for a daily news digest.
+  #   - cron: "0 6 * * *"
   workflow_dispatch:
     # Lets us trigger a run manually from the Actions tab in the GitHub UI.
     inputs:
